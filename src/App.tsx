@@ -36,7 +36,7 @@ const App = () => {
           console.warn("Failed to parse ICE candidate string:", candidate);
           return null;
         }
-        const [, foundation, component, protocol, priority, ip, port, type, rest] = parts;
+        const [ rest] = parts;
         const candidateObj: RTCIceCandidateInit = {
           candidate,
           sdpMid: rest.includes("sdpMid") ? rest.match(/sdpMid (\S+)/)?.[1] || "0" : "0",
