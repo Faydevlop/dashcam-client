@@ -36,10 +36,10 @@ const App = () => {
           console.warn("Failed to parse ICE candidate string:", candidate);
           return null;
         }
-        const [ rest] = parts;
+        const [, foundation, component, protocol, priority, ip, port, type, rest] = parts;
         const candidateObj: RTCIceCandidateInit = {
-          candidate,
-          sdpMid: rest.includes("sdpMid") ? rest.match(/sdpMid (\S+)/)?.[1] || "0" : "0",
+          candidate: `candidate:${foundation} ${component} ${protocol} ${priority} ${ip} ${port} typ ${type}${rest}`,
+          sdpMid: rest.match(/sdpMid (\S+)/)?.[1] || "0",
           sdpMLineIndex: parseInt(rest.match(/sdpMLineIndex (\d+)/)?.[1] || "0"),
           usernameFragment: rest.match(/ufrag (\S+)/)?.[1] || undefined,
         };
@@ -49,7 +49,7 @@ const App = () => {
         return null;
       }
     }
-    return candidate;
+    return candidate as RTCIceCandidateInit;
   };
 
   // Initialize media and WebSocket connection
@@ -64,10 +64,10 @@ const App = () => {
       });
       localStreamRef.current = stream;
       setStatus("Microphone access granted");
-      console.log("Mic access granted");
-    } catch (err) {
-      console.error("Mic access denied:", err);
-      setStatus("Microphone access denied");
+      console.log("Mic access granted, tracks:", stream.getTracks());
+    } catch (err: any) {
+      console.error("Mic access error:", err);
+      setStatus(`Microphone error: ${err.name} - ${err.message}`);
     }
   };
 
@@ -85,15 +85,15 @@ const App = () => {
 
     socket.on("connect_error", (err) => {
       console.error("Socket connection error:", err);
-      setStatus("Socket connection failed");
+      setStatus(`Socket connection failed: ${err.message}`);
     });
 
-    // Handle reconnection
     socket.on("reconnect", () => {
       setStatus("Reconnected to server");
       const deviceId = REACT_APP_DEVICE_ID || "dashcam-001";
       socket.emit("dashcam-join", deviceId);
       socket.emit("video-dashcam-join", deviceId);
+      console.log("Socket reconnected, re-registered as:", deviceId);
     });
 
     const handleIncomingCall = async (adminSocketId: string, isVideo: boolean) => {
@@ -131,21 +131,17 @@ const App = () => {
 
         const videoTracks = stream.getVideoTracks();
         const audioTracks = stream.getAudioTracks();
-        console.log(`Got ${videoTracks.length} video tracks, ${audioTracks.length} audio tracks`);
+        console.log(`Got ${videoTracks.length} video tracks, ${audioTracks.length} audio tracks`, {
+          video: videoTracks.map(t => ({ id: t.id, enabled: t.enabled, readyState: t.readyState })),
+          audio: audioTracks.map(t => ({ id: t.id, enabled: t.enabled, readyState: t.readyState })),
+        });
 
         setCallStatus(`${isVideo ? "Camera and microphone" : "Microphone"} access granted`);
       } catch (err: any) {
         console.error("Media access error:", err);
-        if (err.name === "NotFoundError") {
-          setCallStatus("Camera not found");
-        } else if (err.name === "NotAllowedError") {
-          setCallStatus("Camera access denied");
-        } else if (err.name === "NotReadableError") {
-          setCallStatus("Camera already in use");
-        } else {
-          setCallStatus(`Camera error: ${err.message}`);
-        }
+        setCallStatus(`Media error: ${err.name} - ${err.message}`);
         setIsCallActive(false);
+        socket.emit(isVideo ? "video-call-ended" : "call-ended", { to: adminSocketId });
         return;
       }
 
@@ -183,12 +179,17 @@ const App = () => {
 
       // Handle incoming audio tracks only for audio calls
       pc.ontrack = (event) => {
-        console.log("Received track from admin:", event.track.kind);
+        console.log("Received track from admin:", event.track.kind, {
+          id: event.track.id,
+          enabled: event.track.enabled,
+          readyState: event.track.readyState,
+        });
         if (event.track.kind === "audio" && remoteAudioRef.current && !isVideo) {
           const [remoteStream] = event.streams;
           remoteAudioRef.current.srcObject = remoteStream;
           remoteAudioRef.current.play().catch((err) => {
             console.error("Remote audio play failed:", err);
+            setCallStatus(`Audio play error: ${err.message}`);
           });
         } else if (event.track.kind === "audio" && isVideo) {
           console.log("Ignoring admin audio track during video call");
@@ -199,7 +200,12 @@ const App = () => {
       // Handle ICE candidates
       pc.onicecandidate = (event) => {
         if (event.candidate) {
-          console.log("Sending ICE candidate:", event.candidate);
+          console.log("Sending ICE candidate:", {
+            candidate: event.candidate.candidate,
+            sdpMid: event.candidate.sdpMid,
+            sdpMLineIndex: event.candidate.sdpMLineIndex,
+            usernameFragment: event.candidate.usernameFragment,
+          });
           socket.emit(isVideo ? "webrtc-video-signal" : "webrtc-signal", {
             to: adminSocketId,
             data: {
@@ -214,6 +220,16 @@ const App = () => {
         }
       };
 
+      // Monitor ICE connection state
+      pc.oniceconnectionstatechange = () => {
+        console.log("ICE connection state:", pc.iceConnectionState);
+        if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") {
+          setCallStatus("ICE connection failed");
+          setIsCallActive(false);
+          socket.emit(isVideo ? "video-call-ended" : "call-ended", { to: adminSocketId });
+        }
+      };
+
       // Monitor connection state
       pc.onconnectionstatechange = () => {
         console.log("Connection state:", pc.connectionState);
@@ -222,9 +238,11 @@ const App = () => {
         } else if (pc.connectionState === "failed") {
           setCallStatus("Connection failed");
           setIsCallActive(false);
+          socket.emit(isVideo ? "video-call-ended" : "call-ended", { to: adminSocketId });
         } else if (pc.connectionState === "disconnected") {
           setCallStatus("Disconnected");
           setIsCallActive(false);
+          socket.emit(isVideo ? "video-call-ended" : "call-ended", { to: adminSocketId });
         } else {
           setCallStatus(`Connecting... (${pc.connectionState})`);
         }
@@ -240,10 +258,12 @@ const App = () => {
     };
 
     socket.on("incoming-call", ({ adminSocketId }: { adminSocketId: string }) => {
+      console.log("Received incoming audio call from:", adminSocketId);
       handleIncomingCall(adminSocketId, false);
     });
 
     socket.on("incoming-video-call", ({ adminSocketId }: { adminSocketId: string }) => {
+      console.log("Received incoming video call from:", adminSocketId);
       handleIncomingCall(adminSocketId, true);
     });
 
@@ -261,19 +281,21 @@ const App = () => {
             to: from,
             data: pc.localDescription,
           });
+          console.log("Sent audio answer to:", from);
           setCallStatus("Answer sent - Establishing audio connection...");
         } else if (data.candidate) {
           console.log("Received ICE candidate:", data.candidate);
           const candidate = parseIceCandidate(data.candidate);
           if (candidate && pc.remoteDescription) {
             await pc.addIceCandidate(new RTCIceCandidate(candidate));
+            console.log("Added ICE candidate:", candidate);
           } else {
             console.warn("Invalid or unprocessable ICE candidate:", data.candidate);
           }
         }
       } catch (err) {
         console.error("Error handling WebRTC signal:", err);
-        setCallStatus("Error in WebRTC signaling");
+        setCallStatus(`WebRTC error: ${err}`);
       }
     });
 
@@ -291,19 +313,21 @@ const App = () => {
             to: from,
             data: pc.localDescription,
           });
+          console.log("Sent video answer to:", from);
           setCallStatus("Answer sent - Establishing video connection...");
         } else if (data.candidate) {
           console.log("Received ICE candidate:", data.candidate);
           const candidate = parseIceCandidate(data.candidate);
           if (candidate && pc.remoteDescription) {
             await pc.addIceCandidate(new RTCIceCandidate(candidate));
+            console.log("Added ICE candidate:", candidate);
           } else {
             console.warn("Invalid or unprocessable ICE candidate:", data.candidate);
           }
         }
       } catch (err) {
         console.error("Error handling WebRTC video signal:", err);
-        setCallStatus("Error in WebRTC video signaling");
+        setCallStatus(`WebRTC video error: ${err}`);
       }
     });
 
@@ -397,6 +421,8 @@ const App = () => {
         Device ID: {REACT_APP_DEVICE_ID || "dashcam-001"}
         <br />
         Call Type: {isCallActive ? (callStatus.includes("video") ? "Video Call Active" : "Audio Call Active") : "Standby"}
+        <br />
+        Socket ID: {socket.id || "Not connected"}
       </div>
     </div>
   );
