@@ -15,7 +15,7 @@ const App = () => {
   const [status, setStatus] = useState("Initializing...");
   const [callStatus, setCallStatus] = useState("Waiting for call...");
   const [isCallActive, setIsCallActive] = useState(false);
-  const REACT_APP_DEVICE_ID = "dashcam-001";
+  const REACT_APP_DEVICE_ID = "dashcam-002";
 
   // Helper function to safely stop media tracks
   const stopMediaTracks = (stream: MediaStream | null) => {
@@ -51,7 +51,7 @@ const App = () => {
 
     // Handle WebSocket connection
     socket.on("connect", () => {
-      const deviceId = REACT_APP_DEVICE_ID || "dashcam-001";
+      const deviceId = REACT_APP_DEVICE_ID || "dashcam-002";
       socket.emit("dashcam-join", deviceId);
       socket.emit("video-dashcam-join", deviceId);
       setStatus(`Connected as ${deviceId}`);
@@ -60,7 +60,7 @@ const App = () => {
     // Handle reconnection
     socket.on("reconnect", () => {
       setStatus("Reconnected to server");
-      const deviceId = REACT_APP_DEVICE_ID || "dashcam-001";
+      const deviceId = REACT_APP_DEVICE_ID || "dashcam-002";
       socket.emit("dashcam-join", deviceId);
       socket.emit("video-dashcam-join", deviceId);
     });
@@ -334,7 +334,7 @@ const App = () => {
       )}
 
       <div style={{ marginTop: "20px", fontSize: "14px", color: "#666" }}>
-        Device ID: {REACT_APP_DEVICE_ID || "dashcam-001"}
+        Device ID: {REACT_APP_DEVICE_ID || "dashcam-002"}
         <br />
         Call Type: {isCallActive ? (callStatus.includes("video") ? "Video Call Active" : "Audio Call Active") : "Standby"}
       </div>
